@@ -2,6 +2,7 @@ import folium
 import sqlite3
 import click
 
+
 def get_latlong(dbpath="hubs.db", max_age=60*60*24):
     conn = sqlite3.connect(dbpath)
     cursor = conn.cursor()
