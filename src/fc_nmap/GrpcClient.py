@@ -1,6 +1,6 @@
 import grpc
-from . fcproto import rpc_pb2, rpc_pb2_grpc
 
+from .fcproto import rpc_pb2_grpc
 from . fcproto.request_response_pb2 import (
     ContactInfoResponse, Empty,
     HubInfoResponse, HubInfoRequest, FidRequest, MessagesResponse,

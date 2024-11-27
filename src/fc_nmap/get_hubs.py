@@ -3,11 +3,13 @@ import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, Any, List, Tuple
 
-from . GrpcClient import HubService
+
 from grpc import FutureTimeoutError, RpcError, StatusCode
 import time, datetime, random
 
-from ipaddress import ip_address 
+from ipaddress import ip_address
+
+from fc_nmap.GrpcClient import HubService
 
 
 def _get_peers(hub_address):
@@ -32,20 +34,23 @@ def get_hubs(hub_address, hubs):
 	if not hub_address:
 		print("No hub address. Check .env.sample")
 		sys.exit(1)
-	peers = _get_peers(hub_address)
+	addr = f'{hub_address[0]}:{hub_address[1]}'
+	peers = _get_peers(addr)
 	if not peers:
-		hubs[hub_address]['ofln_ts'] = int(time.time() * 1000)
+		peers = _get_peers(hub_address[2])
+	if not peers:
 		return hubs
 	for c in peers.contacts:
-		id = f'{c.rpc_address.address}:{c.rpc_address.port}'
-		if id not in hubs or hubs[id]['last_active_ts'] < c.timestamp:
+		id = (c.rpc_address.address, c.rpc_address.port, c.rpc_address.dns_name)
+		if id not in hubs:
 			hubs[id] = {
+				'ip': c.rpc_address.address,
+				'port': c.rpc_address.port,
 				'family': c.rpc_address.family,
 				'dns_name': c.rpc_address.dns_name,
 				'hubv': c.hub_version,
 				'appv': c.app_version,
-				'last_active_ts': c.timestamp,
-				'ofln_ts': None
+				'last_active_ts': c.timestamp
 				}
 	return hubs
 
@@ -106,30 +111,28 @@ def get_hub_info(address, port, dnsname, timeout=5):
 
 
 def process_hub_records(records: List[Tuple[Any, Any, Any]], timeout: int, max_workers: int) -> Tuple[Dict[Tuple[Any, Any, Any], Any], List[Tuple[Any, Any, Any]]]:
-    hub_infos = {}
-    disappear_records = []
+	hub_infos = {}
 
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        # Submit tasks to the executor
-        futures = {
-            executor.submit(get_hub_info, r[0], r[1], r[2], timeout): r
-            for r in records
-        }
-
-        for future in as_completed(futures):
-            record = futures[future]  # Get the record associated with the future
-            try:
-                result = future.result(timeout=timeout)  # Set timeout for each task
-                if result:  # Only append if result is not None or empty
-                    hub_infos[record] = result
-                else:
-                    disappear_records.append(record)
-            except TimeoutError:
-                print(f"Timeout processing hub {record[0]}:{record[1]} ({record[2]}): Task took longer than {timeout} seconds.")
-                disappear_records.append(record)
-            except Exception as e:
-                # Log more specific information about the error
-                print(f"Error processing hub {record[0]}:{record[1]} ({record[2]}): {e}")
-                disappear_records.append(record)
-
-    return hub_infos, disappear_records
+	disappear_records = []
+	with ThreadPoolExecutor(max_workers=max_workers) as executor:
+		# Submit tasks to the executor
+		futures = {
+		    executor.submit(get_hub_info, r[0], r[1], r[2], timeout): r
+		    for r in records
+		}
+		for future in as_completed(futures):
+			record = futures[future]  # Get the record associated with the future
+			try:
+				result = future.result(timeout=timeout)  # Set timeout for each task
+				if result:  # Only append if result is not None or empty
+					hub_infos[record] = result
+				else:
+					disappear_records.append(record)
+			except TimeoutError:
+				print(f"Timeout processing hub {record[0]}:{record[1]} ({record[2]}): Task took longer than {timeout} seconds.")
+				disappear_records.append(record)
+			except Exception as e:
+				# Log more specific information about the error
+				print(f"Error processing hub {record[0]}:{record[1]} ({record[2]}): {e}")
+				disappear_records.append(record)
+	return hub_infos, disappear_records

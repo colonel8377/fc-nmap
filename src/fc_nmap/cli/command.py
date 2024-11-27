@@ -153,12 +153,13 @@ def scan(hub, hops, conn):
     get_hubs(hub, hubs)
     if not hubs or len(hubs) == 0:
         print(f'Unable to contact {hub}')
-        insert_new_hubs(conn, db_cursor, hubs)
-        return
-    max_workers = min(int(hops / 10) + 1, 100)
+        # insert_new_hubs(conn, db_cursor, hubs)
+        return hubs
+    max_workers = max(min(int(hops / 10) + 1, 100), os.cpu_count())
     process_hub_peers(hubs, hops, max_workers)
     print(f'Hubs found: {len(hubs)}')
     insert_new_hubs(conn, db_cursor, hubs)
+    return hubs
 
 
 def merge_overlapping_downtimes(conn):
@@ -224,7 +225,6 @@ def insert_new_hubs(conn, db_cursor, hubs):
         h_proto_ver = hubs[h]['hubv']
         h_dnsname = hubs[h]['dns_name']
         h_last_active_ts = hubs[h]['last_active_ts']
-        h_ofln_ts = hubs[h]['ofln_ts']
 
         batch_records.append((
             h_ip,
@@ -232,28 +232,23 @@ def insert_new_hubs(conn, db_cursor, hubs):
             h_dnsname,
             h_proto_ver,
             h_app_ver,
-            h_last_active_ts,
-            h_ofln_ts
+            h_last_active_ts
         ))
     # Execute the batch insert if there are records to insert
     if batch_records:
         try:
             db_cursor.executemany("""
-                INSERT INTO hub_base_info (ip, port, dnsname, proto_version, app_version, last_active_ts, ofln_ts)
+                INSERT INTO hub_base_info (ip, port, dnsname, proto_version, app_version, last_active_ts)
                 VALUES (%s, %s, %s, %s, %s, to_timestamp(%s / 1000), to_timestamp(%s / 1000))
                 ON CONFLICT (ip, port) DO UPDATE
                 SET dnsname = COALESCE(EXCLUDED.dnsname, hub_base_info.dnsname),
                     proto_version = COALESCE(EXCLUDED.proto_version, hub_base_info.proto_version),
                     app_version = COALESCE(EXCLUDED.app_version, hub_base_info.app_version),
                     last_active_ts = COALESCE(EXCLUDED.last_active_ts, hub_base_info.last_active_ts),
-                    ofln_ts = EXCLUDED.ofln_ts;  -- This will always update
             """, batch_records)
             conn.commit()  # Commit the changes once after all inserts
         except Exception as e:
             print(f"An error occurred: {e}")
-    db_cursor.execute("""INSERT INTO kv (k, v) VALUES ('LAST_SCAN', EXTRACT(EPOCH FROM NOW())::integer)
-                         ON CONFLICT (k) DO UPDATE SET v =  EXCLUDED.v;""")
-    # db_cursor.execute("""INSERT INTO scan_stats (hubs) VALUES (%s)""", (len(hubs),))
     conn.commit()
     print('Database updated.')
 
@@ -298,11 +293,11 @@ def update_hub_info(age_threshold, grpc_timeout, conn):
                 (
                     record[0],  # IP
                     record[1],  # Port
+                    info.peerId,
                     info.version,
                     info.is_syncing,
                     info.nickname,
                     info.root_hash,
-                    info.peerId,
                     info.hub_operator_fid,
                     info.db_stats.num_messages,
                     info.db_stats.num_fid_events,
@@ -319,15 +314,14 @@ def update_hub_info(age_threshold, grpc_timeout, conn):
     # Create the SQL command
     sql_command = """
     INSERT INTO hub_ext_info 
-    (ip, port, version, is_syncing, nickname, root_hash, peerid, fid, num_messages, num_fid_events, num_fname_events, 
+    (ip, port, peerid, version, is_syncing, nickname, root_hash, fid, num_messages, num_fid_events, num_fname_events, 
     approx_size, updated_at) 
     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
-    ON CONFLICT (ip, port) DO UPDATE SET
+    ON CONFLICT (ip, port, peerid) DO UPDATE SET
         version = EXCLUDED.version,
         is_syncing = EXCLUDED.is_syncing,
         nickname = EXCLUDED.nickname,
         root_hash = EXCLUDED.root_hash,
-        peerid = EXCLUDED.peerid,
         fid = EXCLUDED.fid,
         num_messages = EXCLUDED.num_messages,
         num_fid_events = EXCLUDED.num_fid_events,
