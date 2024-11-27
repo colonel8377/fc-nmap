@@ -9,7 +9,7 @@ import time, datetime, random
 
 from ipaddress import ip_address
 
-from fc_nmap.GrpcClient import HubService
+from src.fc_nmap.GrpcClient import HubService
 
 
 def _get_peers(hub_address):

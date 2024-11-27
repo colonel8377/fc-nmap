@@ -3,20 +3,10 @@ import os
 import click
 import sys
 
-import psycopg2
+from src.fc_nmap.get_hubs import get_hubs, process_hub_records, process_hub_peers
+from src.fc_nmap import dbexports, dbexports_maps
+from src.fc_nmap.ip2location import resolve_ip
 
-from fc_nmap.__about__ import __version__
-from fc_nmap.get_hubs import get_hubs, process_hub_records, process_hub_peers
-from fc_nmap import dbexports, dbexports_maps
-from fc_nmap.ip2location import resolve_ip
-
-
-@click.group(context_settings={"help_option_names": ["-h", "--help"]}, invoke_without_command=True)
-@click.version_option(version=__version__, prog_name="fc-nmap")
-def fc_nmap():
-    """Farcaster Network Mapper
-    """
-    pass
 
 
 def update_full_db(conn):
@@ -384,9 +374,9 @@ def update_hub_info(age_threshold, grpc_timeout, conn):
 def update_hub_geo(geo_api_key, conn):
     cursor = conn.cursor()
     cursor.execute("""
-        SELECT hub_base_info.ip 
-        FROM hub_base_info 
-        LEFT JOIN hub_addr ON hub_base_info.ip = hub_addr.ip
+        SELECT hub_info.ip 
+        FROM hub_info 
+        LEFT JOIN hub_addr ON hub_info.ip = hub_addr.ip
         WHERE EXTRACT(EPOCH FROM NOW()) - EXTRACT(EPOCH FROM hub_addr.updated_at) > %s
         OR hub_addr.updated_at IS NULL;
         """, (60 * 60 * 24 * 5,))
@@ -450,113 +440,5 @@ def update_hub_geo(geo_api_key, conn):
             """, batch_records)
             conn.commit()  # Commit the changes once after all inserts
         except Exception as e:
+            conn.rollback()
             print(f"An error occurred: {e}")
-
-
-def initdb(conn):
-    """Initialize the database"""
-    try:
-        cursor = conn.cursor()
-    except:
-        print('hubs.db not found. Run "fc-nmap initdb" to create it.')
-        sys.exit(1)
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS kv (
-            k TEXT NOT NULL PRIMARY KEY,
-            v INTEGER
-        );
-        
-        CREATE TABLE IF NOT EXISTS server_downtime (
-    ip TEXT,
-    port INTEGER,
-    downtime_start TIMESTAMP,
-    downtime_end TIMESTAMP,
-    PRIMARY KEY (ip, port, downtime_start),
-    FOREIGN KEY (ip, port) REFERENCES hub_base_info(ip, port)
-);
-        
-        CREATE TABLE IF NOT EXISTS hub_base_info (
-            ip TEXT,
-            port INTEGER,
-            dnsname TEXT,
-            proto_version TEXT,
-            app_version TEXT,
-            last_active_ts TIMESTAMP,  -- Changed from TEXT to TIMESTAMP for better time handling
-            ofln_ts TIMESTAMP,
-            PRIMARY KEY (ip, port)
-        );
-        
-        CREATE INDEX IF NOT EXISTS idx_hub_info_ip ON hub_base_info(ip);
-        
-        CREATE TABLE IF NOT EXISTS hub_ext_info (
-            ip TEXT,
-            port INTEGER,
-            version TEXT,
-            is_syncing BOOLEAN,
-            nickname TEXT,
-            root_hash TEXT,
-            peerid TEXT,
-            fid INTEGER,
-            num_messages INTEGER,
-            num_fid_events INTEGER,
-            num_fname_events INTEGER,
-            approx_size INTEGER,
-            updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,  -- Changed TEXT to TIMESTAMP
-            PRIMARY KEY (ip, port)
-        );
-        
-        CREATE TABLE IF NOT EXISTS hub_addr (
-            ip TEXT NOT NULL PRIMARY KEY,
-            country_code TEXT,
-            country_name TEXT,
-            region_name TEXT,
-            city_name TEXT,
-            latitude REAL,
-            longitude REAL,
-            zip_code TEXT,
-            time_zone TEXT,
-            as_number INTEGER,
-            as_name TEXT,
-            is_proxy BOOLEAN,  -- Changed BOOL to BOOLEAN for PostgreSQL
-            updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP  -- Changed TEXT to TIMESTAMP
-        );
-        
-        CREATE TABLE IF NOT EXISTS scan_stats (
-            ts TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,  -- Changed TEXT to TIMESTAMP
-            hubs INTEGER DEFAULT 0
-        );
-
-    """)
-    conn.commit()
-
-
-@fc_nmap.command()
-@click.option('--out', default='-', help="Output file, leave empty for stdout")
-@click.option('--max-age', default=86400,
-              help="Only check records that were created/updated in the last INTEGER seconds.", show_default=True)
-@click.option('--report',
-              type=click.Choice(['all', 'countries', 'fids', 'app', 'asn', 'geoip', 'map'], case_sensitive=False))
-def export(out, max_age, report):
-    """Create a tab separated dump of the database"""
-    if report == 'all':
-        dbexports.export_full(dbpath='hubs.db', out=out, max_age=max_age)
-    if report == 'countries':
-        dbexports.export_countries(dbpath='hubs.db', out=out, max_age=max_age)
-    if report == 'fids':
-        dbexports.export_fids(dbpath='hubs.db', out=out, max_age=max_age)
-    if report == 'app':
-        dbexports.export_app_version(dbpath='hubs.db', out=out, max_age=max_age)
-    if report == 'asn':
-        dbexports.export_asn(dbpath='hubs.db', out=out, max_age=max_age)
-    if report == 'geoip':
-        dbexports.export_latlong(dbpath='hubs.db', out=out, max_age=max_age)
-    if report == 'pam':
-        dbexports_maps.map(dbpath='hubs.db', out=out, max_age=max_age)
-
-
-@fc_nmap.command()
-@click.option('--out', default='fc_nmap.html', help="Output file")
-@click.option('--max-age', default=86400,
-              help="Only check records that were created/updated in the last INTEGER seconds.", show_default=True)
-def map(out, max_age):
-    dbexports_maps.create_map(dbpath='hubs.db', out=out, max_age=max_age)
