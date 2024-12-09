@@ -2,11 +2,11 @@
 """Client and server classes corresponding to protobuf-defined services."""
 import grpc
 
-from . import hub_event_pb2 as hub__event__pb2
-from . import message_pb2 as message__pb2
-from . import onchain_event_pb2 as onchain__event__pb2
-from . import request_response_pb2 as request__response__pb2
-from . import username_proof_pb2 as username__proof__pb2
+import hub_event_pb2 as hub__event__pb2
+import message_pb2 as message__pb2
+import onchain_event_pb2 as onchain__event__pb2
+import request_response_pb2 as request__response__pb2
+import username_proof_pb2 as username__proof__pb2
 
 
 class HubServiceStub(object):

@@ -6,13 +6,13 @@ from typing import ClassVar as _ClassVar, Iterable as _Iterable, Optional as _Op
 DESCRIPTOR: _descriptor.FileDescriptor
 
 class DbTrieNode(_message.Message):
-    __slots__ = ["key", "childChars", "items", "hash"]
-    KEY_FIELD_NUMBER: _ClassVar[int]
+    __slots__ = ["childChars", "hash", "items", "key"]
     CHILDCHARS_FIELD_NUMBER: _ClassVar[int]
-    ITEMS_FIELD_NUMBER: _ClassVar[int]
     HASH_FIELD_NUMBER: _ClassVar[int]
-    key: bytes
+    ITEMS_FIELD_NUMBER: _ClassVar[int]
+    KEY_FIELD_NUMBER: _ClassVar[int]
     childChars: _containers.RepeatedScalarFieldContainer[int]
-    items: int
     hash: bytes
+    items: int
+    key: bytes
     def __init__(self, key: _Optional[bytes] = ..., childChars: _Optional[_Iterable[int]] = ..., items: _Optional[int] = ..., hash: _Optional[bytes] = ...) -> None: ...

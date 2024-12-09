@@ -1,16 +1,14 @@
-import json
 import os
+from concurrent.futures import TimeoutError
 
 import psycopg2
+from absl import logging
 from psycopg2.extras import execute_values
-from src.fc_nmap.get_hubs import process_hub_records, process_hub_peers, get_hubs
-import signal
-import time
 
-from src.fc_nmap.cli.command import update_hub_geo
+from src.fc_nmap.get_hubs import process_hub_records, process_hub_peers, get_hubs
 
 # Database connection parameters
-db_params = {
+DB_PARAMS = {
     'dbname': 'DappResearch',
     'user': 'DappResearch',
     'password': 'FarcasterIndexer',
@@ -18,12 +16,10 @@ db_params = {
     'port': 6541
 }
 
-geo_api_key = '0CFBD2B3B0D534EEA0B8C9DB33DBDF3C'
+GEO_API_KEY = '0CFBD2B3B0D534EEA0B8C9DB33DBDF3C'
 
-
-def timeout_handler(signum, frame):
-    """Raise a timeout exception when a function call exceeds its time limit."""
-    raise TimeoutError("Operation timed out!")
+# Logging configuration
+logging.set_verbosity(logging.INFO)
 
 
 def upsert_hub_records(cursor, batch_records):
@@ -42,7 +38,7 @@ def upsert_hub_records(cursor, batch_records):
             hub_version = EXCLUDED.hub_version,
             app_version = EXCLUDED.app_version,
             last_active_ts = EXCLUDED.last_active_ts,
-            "version" = EXCLUDED."version",
+            version = EXCLUDED.version,
             is_syncing = EXCLUDED.is_syncing,
             nickname = EXCLUDED.nickname,
             root_hash = EXCLUDED.root_hash,
@@ -60,92 +56,89 @@ def upsert_hub_records(cursor, batch_records):
             batch_records,
             template="(%s, %s, %s, %s, %s, %s, %s, to_timestamp(%s/1000), %s, %s, %s, %s, %s, %s, %s, %s, %s)"
         )
-        print(f"{len(batch_records)} records upserted successfully.")
+        logging.info(f"{len(batch_records)} records upserted successfully.")
     except Exception as e:
-        raise RuntimeError(f"Failed to UPSERT hub records: {str(e)}")
+        logging.error(f"Failed to UPSERT hub records: {e}")
+        raise
+
+
+def fetch_random_hub(cursor):
+    """Fetch a random hub from the database."""
+    query = "SELECT ip, port, dns_name FROM hub_info WHERE ip != '127.0.0.1' ORDER BY random() DESC LIMIT 1;"
+    cursor.execute(query)
+    return cursor.fetchone()
+
+
+def scan_hubs(cursor, conn, max_workers=os.cpu_count()):
+    """Main hub scanning logic."""
+    logging.info("\n=== Starting new scan for peers ===")
+    hubs = {}
+
+    # Fetch a random hub to start
+    random_row = fetch_random_hub(cursor)
+    if not random_row:
+        logging.info("No hubs available in the database.")
+        return
+
+    logging.info(f"Scanning peers for {random_row[0]}:{random_row[1]}")
+
+    try:
+        # Process hubs
+        hubs = get_hubs(hub_address=(random_row[0], random_row[1], random_row[2]), hubs=hubs)
+        logging.info(f"Finding peers of peers with hops {int(len(hubs) / 10)}")
+        candidates = process_hub_peers(hubs=hubs, hops=int(len(hubs) / 10), max_workers=max_workers)
+        logging.info(f"Fulfilling more info")
+        hub_infos, disappear_records = process_hub_records(list(candidates.keys()), timeout=10, max_workers=max_workers)
+        logging.info(f"Updating hub records")
+        # Prepare records for insertion
+        batch_new_records = [
+            (
+                base_attr['ip'],
+                base_attr['port'],
+                hub_infos[key].peerId,
+                base_attr['family'],
+                base_attr['dns_name'],
+                base_attr['hubv'],
+                base_attr['appv'],
+                base_attr['last_active_ts'],
+                hub_infos[key].version,
+                hub_infos[key].is_syncing,
+                hub_infos[key].nickname,
+                hub_infos[key].root_hash,
+                hub_infos[key].hub_operator_fid,
+                hub_infos[key].db_stats.num_messages,
+                hub_infos[key].db_stats.num_fid_events,
+                hub_infos[key].db_stats.num_fname_events,
+                hub_infos[key].db_stats.approx_size
+            )
+            for key, base_attr in hubs.items() if hub_infos.get(key)
+        ]
+
+        # Insert or update records in the database
+        if batch_new_records:
+            upsert_hub_records(cursor, batch_new_records)
+            conn.commit()
+            logging.info(f"Successfully committed {len(batch_new_records)} records to the database.")
+
+    except TimeoutError:
+        logging.error("Scanning operation timed out. Skipping to the next iteration.")
+    except Exception as e:
+        conn.rollback()
+        logging.error(f"Error during scanning: {e}")
+
 
 def main_loop():
-    conn = None
-    try:
-        conn = psycopg2.connect(**db_params)
-        cursor = conn.cursor()
-
-        while True:
-            print("\n=== Starting new scan for peers ===")
-            hubs = {}
-
-            try:
-                # Fetch a random hub to start
-                cursor.execute(
-                    "SELECT ip, port, dns_name FROM hub_info WHERE ip != '127.0.0.1' ORDER BY last_active_ts DESC LIMIT 1;"
-                )
-                random_row = cursor.fetchone()
-                if not random_row:
-                    print("No hubs available in the database.")
-                    continue
-
-                print(f"Scanning peers for {random_row[0]}:{random_row[1]}")
-
-                # Set a timeout for scanning peers
-                signal.signal(signal.SIGALRM, timeout_handler)
-                signal.alarm(600)  # 300-second timeout
-
-                # Process hubs
-                get_hubs(hub_address=(random_row[0], random_row[1], random_row[2]), hubs=hubs)
-                candidates = process_hub_peers(hubs=hubs, hops=100, max_workers=10)
-                hub_infos, disappear_records = process_hub_records(candidates.keys(), 10, int(len(candidates.keys())/10) )
-
-                # Prepare records for insertion
-                batch_new_records = []
-                for key, base_attr in hubs.items():
-                    info = hub_infos.get(key)
-                    if info is None:
-                        continue
-
-                    batch_new_records.append((
-                        base_attr['ip'],
-                        base_attr['port'],
-                        info.peerId,
-                        base_attr['family'],
-                        base_attr['dns_name'],
-                        base_attr['hubv'],
-                        base_attr['appv'],
-                        base_attr['last_active_ts'],
-                        info.version,
-                        info.is_syncing,
-                        info.nickname,
-                        info.root_hash,
-                        info.hub_operator_fid,
-                        info.db_stats.num_messages,
-                        info.db_stats.num_fid_events,
-                        info.db_stats.num_fname_events,
-                        info.db_stats.approx_size
-                    ))
-
-                # Insert or update records in the database
-                if batch_new_records:
-                    upsert_hub_records(cursor, batch_new_records)
-                    conn.commit()
-                    print(f"Successfully committed {len(batch_new_records)} records to the database.")
-                update_hub_geo(geo_api_key=geo_api_key, conn=conn)
-            except Exception as e:
-                conn.rollback()
-                print(f"Error during scanning: {str(e)}")
-            except TimeoutError:
-                print("Scanning operation timed out. Moving to the next iteration.")
-
-            finally:
-                signal.alarm(0)  # Disable alarm after the operation
-
-            # Sleep before next scan
-            print("Scan completed.")
-
-    except Exception as e:
-        print(f"Critical error: {str(e)}")
-    finally:
-        if conn:
-            conn.close()
-            print("Database connection closed.")
+    """Main loop for scanning hubs."""
+    with psycopg2.connect(**DB_PARAMS) as conn:
+        with conn.cursor() as cursor:
+            while True:
+                try:
+                    scan_hubs(cursor, conn)
+                except Exception as e:
+                    logging.error(f"Critical error during main loop: {e}")
+                finally:
+                    logging.info("Scan iteration completed. Sleeping before next scan.")
+                    # time.sleep(60)  # Adjust sleep interval as needed
 
 
 if __name__ == '__main__':

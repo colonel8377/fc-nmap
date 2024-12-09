@@ -1,13 +1,14 @@
 import os
-
-import click
 import sys
 
+import click
+from absl import logging
+
 from src.fc_nmap.get_hubs import get_hubs, process_hub_records, process_hub_peers
-from src.fc_nmap import dbexports, dbexports_maps
 from src.fc_nmap.ip2location import resolve_ip
 
-
+# Logging configuration
+logging.set_verbosity(logging.INFO)
 
 def update_full_db(conn):
     cursor = conn.cursor()
@@ -16,7 +17,7 @@ def update_full_db(conn):
            FROM hub_base_info 
        """, )
     records = cursor.fetchall()
-    print(f'Update full DB {len(records)} records')
+    logging.info(f'Update full DB {len(records)} records')
     max_workers = min((int(len(records) / 100) + 1) * os.cpu_count(), 1000)
 
     disappear_records = records
@@ -32,7 +33,7 @@ def update_full_db(conn):
             active_hubs[key] = hub_infos[info]
         i += 1
         timeout *= 2
-    print(f'Find {len(disappear_records)} Disappear Records')
+    logging.info(f'Find {len(disappear_records)} Disappear Records')
     batch_new_records = []
     for key in active_hubs.keys():
         record = key
@@ -142,12 +143,12 @@ def scan(hub, hops, conn):
 
     get_hubs(hub, hubs)
     if not hubs or len(hubs) == 0:
-        print(f'Unable to contact {hub}')
+        logging.info(f'Unable to contact {hub}')
         # insert_new_hubs(conn, db_cursor, hubs)
         return hubs
     max_workers = max(min(int(hops / 10) + 1, 100), os.cpu_count())
     process_hub_peers(hubs, hops, max_workers)
-    print(f'Hubs found: {len(hubs)}')
+    logging.info(f'Hubs found: {len(hubs)}')
     insert_new_hubs(conn, db_cursor, hubs)
     return hubs
 
@@ -155,7 +156,7 @@ def scan(hub, hops, conn):
 def merge_overlapping_downtimes(conn):
     try:
         with conn.cursor() as cursor:
-            print(f'Merge Hub Down Start-End Pair Begin...')
+            logging.info(f'Merge Hub Down Start-End Pair Begin...')
             # Start the transaction
             cursor.execute("BEGIN;")
             # Step 1: Create a temporary table to store merged results
@@ -201,9 +202,9 @@ def merge_overlapping_downtimes(conn):
             # Commit the transaction
 
             conn.commit()
-            print(f'Merge Hub Down Start-End Pair End...')
+            logging.info(f'Merge Hub Down Start-End Pair End...')
     except Exception as e:
-        print("Error occurred:", e)
+        logging.info("Error occurred:", e)
         conn.rollback()
 
 
@@ -238,9 +239,9 @@ def insert_new_hubs(conn, db_cursor, hubs):
             """, batch_records)
             conn.commit()  # Commit the changes once after all inserts
         except Exception as e:
-            print(f"An error occurred: {e}")
+            logging.info(f"An error occurred: {e}")
     conn.commit()
-    print('Database updated.')
+    logging.info('Database updated.')
 
 
 def updatedb(age_threshold, hub_info, hub_location, geo_api_key, timeout, db_params):
@@ -378,7 +379,8 @@ def update_hub_geo(geo_api_key, conn):
         FROM hub_info 
         LEFT JOIN hub_addr ON hub_info.ip = hub_addr.ip
         WHERE EXTRACT(EPOCH FROM NOW()) - EXTRACT(EPOCH FROM hub_addr.updated_at) > %s
-        OR hub_addr.updated_at IS NULL;
+        OR hub_addr.updated_at IS NULL
+        OR hub_addr.country_code IS NULL;
         """, (60 * 60 * 24 * 5,))
     records = cursor.fetchall()
     if not records or len(records) == 0:
@@ -441,4 +443,4 @@ def update_hub_geo(geo_api_key, conn):
             conn.commit()  # Commit the changes once after all inserts
         except Exception as e:
             conn.rollback()
-            print(f"An error occurred: {e}")
+            logging.info(f"An error occurred: {e}")
